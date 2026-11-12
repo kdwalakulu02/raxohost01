@@ -64,7 +64,7 @@ health_retries = 15
 health = [
   { type = "unit", unit = "raxo-api.service" },
   { type = "unit", unit = "raxo-worker.service" },
-  { type = "http", url = "http://127.0.0.1:8080/health/ready", timeout_secs = 5 },
+  { type = "http", url = "http://127.0.0.1:3000/health/ready", timeout_secs = 5 },
 ]
 
 # raxohost manages itself as project "raxohost" (`raxohost self install <id>`);
