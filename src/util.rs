@@ -245,6 +245,10 @@ fn lookup_user(user: &str) -> Result<(u32, u32)> {
     unsafe { Ok(((*pw).pw_uid, (*pw).pw_gid)) }
 }
 
+pub fn resolve_group(group: &str) -> Result<u32> {
+    lookup_group(group)
+}
+
 fn lookup_group(group: &str) -> Result<u32> {
     if let Ok(n) = group.parse::<u32>() {
         return Ok(n);

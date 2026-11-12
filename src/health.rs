@@ -2,9 +2,10 @@
 
 use crate::config::{ActivationPolicy, Config};
 use crate::systemd::Systemd;
+use crate::util::resolve_group;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
-use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -18,8 +19,16 @@ pub enum HealthCheck {
         #[serde(default)]
         timeout_secs: Option<u64>,
     },
-    /// Unix socket exists at path.
-    Socket { path: String },
+    /// Unix socket exists at path; optionally with exact permission bits and group.
+    Socket {
+        path: String,
+        /// Octal permission bits, e.g. "0660".
+        #[serde(default)]
+        mode: Option<String>,
+        /// Group name or numeric gid owning the socket.
+        #[serde(default)]
+        group: Option<String>,
+    },
     /// `systemctl is-active <unit>` reports "active".
     Unit { unit: String },
     /// Command (argv, no shell) exits 0. Output is not printed.
@@ -34,7 +43,7 @@ impl HealthCheck {
     pub fn describe(&self) -> String {
         match self {
             HealthCheck::Http { url, .. } => format!("http {url}"),
-            HealthCheck::Socket { path } => format!("socket {path}"),
+            HealthCheck::Socket { path, .. } => format!("socket {path}"),
             HealthCheck::Unit { unit } => format!("unit {unit}"),
             HealthCheck::Command { argv, .. } => {
                 format!("command {}", argv.first().map(String::as_str).unwrap_or(""))
@@ -60,13 +69,27 @@ impl HealthCheck {
                 }
                 Ok(())
             }
-            HealthCheck::Socket { path } => {
+            HealthCheck::Socket { path, mode, group } => {
                 let path = cfg.expand(path)?;
-                match std::fs::metadata(Path::new(&path)) {
-                    Ok(md) if md.file_type().is_socket() => Ok(()),
+                let md = match std::fs::metadata(Path::new(&path)) {
+                    Ok(md) if md.file_type().is_socket() => md,
                     Ok(_) => bail!("{path} exists but is not a socket"),
                     Err(_) => bail!("{path} does not exist"),
+                };
+                if let Some(m) = mode {
+                    let want = parse_mode(m)?;
+                    let have = md.mode() & 0o7777;
+                    if have != want {
+                        bail!("{path} has mode {have:04o}, expected {want:04o}");
+                    }
                 }
+                if let Some(g) = group {
+                    let want = resolve_group(g)?;
+                    if md.gid() != want {
+                        bail!("{path} has gid {}, expected {g} ({want})", md.gid());
+                    }
+                }
+                Ok(())
             }
             HealthCheck::Unit { unit } => {
                 let st = sys.is_active(unit);
@@ -107,6 +130,15 @@ impl HealthCheck {
             }
         }
     }
+}
+
+fn parse_mode(m: &str) -> Result<u32> {
+    let v = u32::from_str_radix(m.trim_start_matches("0o"), 8)
+        .map_err(|_| anyhow::anyhow!("invalid octal mode {m:?}"))?;
+    if v > 0o7777 {
+        bail!("invalid mode {m:?}");
+    }
+    Ok(v)
 }
 
 /// Run all checks once; returns failure descriptions.
