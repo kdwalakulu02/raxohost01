@@ -1,0 +1,87 @@
+# raxohost configuration — install as
+#   /root/store01/deploy01/config/raxohost/raxohost.toml
+# (override with --config <path> or RAXOHOST_CONFIG=<path>).
+#
+# raxohost only reads this file; it never reads other files under config/
+# (those hold service secrets such as env files).
+
+# Runtime root. Everything raxohost manages lives below it:
+#   bin/ releases/ current/ config/ data/ run/ logs/ backups/ systemd/ state/
+deploy_root = "/root/store01/deploy01"
+
+# Release sources, tried in order. Each is laid out like phase01/dist/:
+#   <source>/<project>/<release-id>/{SHA256SUMS,manifest.json,<archive>.tar.gz}
+#   <source>/raxosentinel-db/<generation>/{SHA256SUMS,manifest.json,<archive>.tar.gz}
+# Local paths are copied, https:// URLs are downloaded. HTTPS sources may publish
+# <source>/<project>/index.txt (one release id per line) for `release available`.
+# Sources are only used at install time; nothing at runtime references them.
+sources = [
+  "/root/store01/phase01/dist",
+  # "https://releases.example.internal/raxo",
+]
+
+# Where `service install` copies rendered units (default /etc/systemd/system).
+# systemd_dir = "/etc/systemd/system"
+
+# Unit templates (*.service, *.target, *.timer, *.socket).
+# Default: <deploy_root>/config/raxohost/units  (see examples/units/ in the repo)
+# Placeholders: {{deploy_root}} {{current:<p>}} {{data:<p>}} {{config:<p>}}
+#               {{run:<p>}} {{logs:<p>}}
+# units_dir = "/root/store01/deploy01/config/raxohost/units"
+
+# Units to `systemctl enable` after `service install`.
+enable = ["raxo.target", "raxosentinel.service", "raxo-api.service", "raxo-worker.service"]
+
+# Health check defaults (overridable per project): attempts and pause between them.
+health_retries = 10
+health_interval_secs = 2
+
+# ---------------------------------------------------------------------------
+# Projects. `services` are restarted (in order) when a release is activated;
+# health checks then run, and a failure re-activates the previous release.
+# Health check placeholders are expanded like in unit templates.
+#   { type = "http",    url = "...", timeout_secs = 5 }      2xx expected
+#   { type = "socket",  path = "...", mode = "0660", group = "raxoscan" }
+#                                                             unix socket exists (mode/group optional)
+#   { type = "unit",    unit = "x.service" }                  systemctl is-active
+#   { type = "command", argv = ["..."], timeout_secs = 30 }   exit 0 (no shell, output hidden)
+# ---------------------------------------------------------------------------
+
+[projects.raxosentinel]
+services = ["raxosentinel.service"]
+health = [
+  { type = "unit", unit = "raxosentinel.service" },
+  # The coordinator creates the socket 0600; the unit's ExecStartPost hands it to
+  # group raxoscan with 0660 so raxoemail (UID 995, --authorized-uid) can connect.
+  # Checking mode+group catches a failed/raced permission fix-up.
+  { type = "socket", path = "{{run:raxosentinel}}/scan.sock", mode = "0660", group = "raxoscan" },
+]
+
+[projects.raxoemailrust]
+# raxo-api needs raxosentinel; restart order matters.
+services = ["raxo-api.service", "raxo-worker.service"]
+health_retries = 15
+health = [
+  { type = "unit", unit = "raxo-api.service" },
+  { type = "unit", unit = "raxo-worker.service" },
+  { type = "http", url = "http://127.0.0.1:8080/health/ready", timeout_secs = 5 },
+]
+
+# raxohost manages itself as project "raxohost" (`raxohost self install <id>`);
+# it has no services, so no section is needed.
+
+# ---------------------------------------------------------------------------
+# raxosentinel signature database generations.
+# ---------------------------------------------------------------------------
+[sentineldb]
+# Generations root (default <deploy_root>/data/raxosentinel/rsidb):
+#   rsidb/<generation>/database.rsidb ...   rsidb/current  (active generation name)
+# root = "/root/store01/deploy01/data/raxosentinel/rsidb"
+
+# Owner applied (chown) to installed generations and the `current` file.
+owner = "raxosentinel:raxosentinel"
+
+# Services restarted / health checks run on activation.
+# Default: the [projects.raxosentinel] services and health checks.
+# services = ["raxosentinel.service"]
+# health = [ { type = "socket", path = "{{run:raxosentinel}}/scan.sock", mode = "0660" } ]

@@ -1,0 +1,6 @@
+[Unit]
+Description=raxohost doctor (deploy root sanity checks)
+
+[Service]
+Type=oneshot
+ExecStart={{deploy_root}}/bin/raxohost --config {{config:raxohost}}/raxohost.toml doctor

@@ -1,0 +1,24 @@
+[Unit]
+Description=Raxo email worker
+After=network-online.target raxo-api.service raxosentinel.service
+# Start only after raxosentinel is fully up (its ExecStartPost fixed socket perms).
+Wants=raxosentinel.service
+PartOf=raxo.target
+
+[Service]
+Type=simple
+# UID 995 — must match raxosentinel --authorized-uid.
+User=raxoemail
+Group=raxoemail
+# Grants traverse on {{run:raxosentinel}} (0710) and rw on scan.sock (0660).
+SupplementaryGroups=raxoscan
+# Default socket path; a SENTINEL_SOCKET in the EnvironmentFile takes precedence.
+Environment=SENTINEL_SOCKET={{run:raxosentinel}}/scan.sock
+WorkingDirectory={{data:raxoemailrust}}
+EnvironmentFile={{config:raxoemailrust}}/raxo.env
+ExecStart={{current:raxoemailrust}}/bin/raxo-worker
+Restart=on-failure
+NoNewPrivileges=true
+
+[Install]
+WantedBy=raxo.target

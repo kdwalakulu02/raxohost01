@@ -1,0 +1,7 @@
+[Unit]
+Description=Raxo mail stack (raxosentinel + raxoemailrust)
+Wants=raxosentinel.service raxo-api.service raxo-worker.service
+After=network-online.target
+
+[Install]
+WantedBy=multi-user.target

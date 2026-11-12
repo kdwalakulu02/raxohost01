@@ -1,0 +1,49 @@
+# Rendered by raxohost from <deploy_root>/config/raxohost/units/raxosentinel.service
+#
+# Socket access model (peer UID authorization is NOT weakened):
+#  - the coordinator binds {{run:raxosentinel}}/scan.sock, forces the socket to 0600 and its
+#    directory to 0700 (owner raxosentinel) on every start;
+#  - ExecStartPost then grants group `raxoscan` traverse on the directory (0710) and
+#    read/write on the socket (0660); the scanner keeps ownership of both;
+#  - the coordinator still accepts only peers whose UID is --authorized-uid (995 = raxoemail).
+[Unit]
+Description=RaxoSentinel scanner coordinator
+After=local-fs.target
+PartOf=raxo.target
+
+[Service]
+Type=simple
+User=raxosentinel
+Group=raxosentinel
+UMask=0077
+# Secrets/tuning live here (mode 0600); raxohost never reads this file.
+EnvironmentFile=-{{config:raxosentinel}}/coordinator.env
+# Socket dir must exist and be owned by the scanner UID (the coordinator refuses otherwise).
+# '+' = run as root; idempotently fixes owner/group/mode before every start.
+ExecStartPre=+/usr/bin/install -d -o raxosentinel -g raxoscan -m 0700 {{run:raxosentinel}}
+# {{current:raxosentinel}} is the stable symlink switched by `raxohost release activate`;
+# `--private-generation current` follows the rsidb/current pointer written by
+# `raxohost sentineldb activate`.
+ExecStart={{current:raxosentinel}}/bin/raxosentinel serve \
+  --socket {{run:raxosentinel}}/scan.sock \
+  --authorized-uid 995 \
+  --private-db-root {{data:raxosentinel}}/rsidb \
+  --private-generation current \
+  --max-workers ${RAXO_WORKERS} \
+  --worker-memory ${RAXO_WORKER_MEMORY} \
+  --worker-timeout-ms ${RAXO_WORKER_TIMEOUT_MS}
+# Runs as the scanner user (owner of dir+socket, member of raxoscan). Waits until the
+# coordinator has applied its own chmod 0600 (bind creates the socket 0700 under UMask=0077),
+# so our 0660 cannot be overwritten by a race. Fails the start after ~10s.
+ExecStartPost=/bin/sh -c 'd="{{run:raxosentinel}}"; s="$$d/scan.sock"; i=0; \
+  until [ -S "$$s" ] && [ "$$(stat -c %%a "$$s")" = 600 ]; do \
+    i=$$((i+1)); [ $$i -gt 100 ] && { echo "raxosentinel socket $$s not ready" >&2; exit 1; }; sleep 0.1; \
+  done; \
+  chgrp raxoscan "$$d" "$$s" && chmod 0710 "$$d" && chmod 0660 "$$s"'
+Restart=on-failure
+TimeoutStopSec=30
+MemoryMax=4G
+NoNewPrivileges=true
+
+[Install]
+WantedBy=raxo.target

@@ -798,3 +798,53 @@ fn template_rendering_and_service_install() {
     assert!(units::render_all(&ctx.cfg).is_err());
     assert!(util::safe_relative("../x").is_err());
 }
+
+#[test]
+fn shipped_examples_are_valid() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let mut cfg = Config::load(&dir.join("raxohost.toml")).unwrap();
+    assert_eq!(cfg.project_policy("raxosentinel").unwrap().health.len(), 2);
+    assert_eq!(
+        cfg.sentineldb_policy().services,
+        vec!["raxosentinel.service"]
+    );
+    cfg.units_dir = Some(dir.join("units"));
+    let rendered = units::render_all(&cfg).unwrap();
+    assert_eq!(rendered.len(), 6);
+    for (name, text) in &rendered {
+        assert!(!text.contains("{{"), "{name} has unrendered placeholders");
+    }
+    let unit = |n: &str| &rendered.iter().find(|(name, _)| name == n).unwrap().1;
+    let sentinel = unit("raxosentinel.service");
+    assert!(sentinel.contains("--authorized-uid 995"));
+    assert!(sentinel.contains("--socket /root/store01/deploy01/run/raxosentinel/scan.sock"));
+    assert!(sentinel.contains("chmod 0660"));
+    for n in ["raxo-api.service", "raxo-worker.service"] {
+        assert!(unit(n).contains("User=raxoemail"), "{n}");
+        assert!(unit(n).contains("SupplementaryGroups=raxoscan"), "{n}");
+        assert!(unit(n).contains("After=network-online.target"), "{n}");
+        assert!(unit(n).contains("raxosentinel.service"), "{n}");
+    }
+}
+
+#[test]
+fn socket_health_check_enforces_mode_and_group() {
+    use std::os::unix::fs::MetadataExt;
+    let env = Env::new();
+    let dir = env.root.join("run/raxosentinel");
+    fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("scan.sock");
+    let _l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let gid = fs::metadata(&sock).unwrap().gid();
+    let (ctx, fake) = env.ctx(&format!(
+        r#"[projects.raxosentinel]
+health = [{{ type = "socket", path = "{{{{run:raxosentinel}}}}/scan.sock", mode = "0660", group = "{gid}" }}]"#
+    ));
+    let checks = ctx.cfg.project_policy("raxosentinel").unwrap().health;
+    fs::set_permissions(&sock, fs::Permissions::from_mode(0o600)).unwrap();
+    let failures = raxohost::health::run_once(&ctx.cfg, &fake, &checks);
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(failures[0].contains("0600"), "{failures:?}");
+    fs::set_permissions(&sock, fs::Permissions::from_mode(0o660)).unwrap();
+    assert!(raxohost::health::run_once(&ctx.cfg, &fake, &checks).is_empty());
+}
